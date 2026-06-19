@@ -2,27 +2,61 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>IA Scanner Patrimoine MAX</title>
+<title>Scanner Patrimoine IA</title>
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 
 <style>
 body { margin:0; font-family:Arial; background:#0f0f0f; color:white; }
-header { padding:12px; background:#14532d; font-size:20px; }
+header { padding:12px; background:#14532d; font-size:18px; }
+
+#panel {
+  padding:10px;
+  background:#1c1c1c;
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+
+button, select {
+  padding:8px;
+}
+
 #map { height:80vh; }
-#panel { padding:10px; background:#1c1c1c; display:flex; gap:10px; flex-wrap:wrap; }
-button { padding:10px; background:#22c55e; border:0; cursor:pointer; }
-.badge { padding:4px 8px; background:#333; border-radius:6px; }
+
+.badge {
+  padding:4px 8px;
+  background:#333;
+  border-radius:6px;
+}
 </style>
 </head>
 
 <body>
 
-<header>🏚️ IA Scanner Patrimoine MAX (Gimont)</header>
+<header>🏚️ Scanner Patrimoine IA</header>
 
 <div id="panel">
-<button onclick="runScan()">🔍 SCANNER MAX</button>
+
+<button onclick="scan()">Scanner</button>
+
+<select id="cat">
+  <option value="all">Toutes catégories</option>
+  <option value="chapelle">Chapelles</option>
+  <option value="moulin">Moulins</option>
+  <option value="pont">Ponts</option>
+  <option value="ferme">Fermes</option>
+  <option value="ruine">Ruines</option>
+</select>
+
+<select id="sort">
+  <option value="desc">Score ↓</option>
+  <option value="asc">Score ↑</option>
+</select>
+
 <span class="badge" id="status">Prêt</span>
+
 </div>
 
 <div id="map"></div>
@@ -37,51 +71,47 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: "© OpenStreetMap"
 }).addTo(map);
 
-let layers = [];
+let markers = [];
+let dataAll = [];
 
-// ----------------------------
-// SCORE IA (heuristique avancée)
-// ----------------------------
-function computeScore(p) {
+// ---------------- SCORE SIMPLE ----------------
+function score(tags) {
+  let s = 0;
 
-  let score = 0;
+  if (tags.amenity === "place_of_worship") s += 25;
+  if (tags.man_made === "watermill") s += 35;
+  if (tags.bridge) s += 15;
+  if (tags.ruins) s += 30;
+  if (tags.disused) s += 20;
+  if (tags.building) s += 10;
 
-  // patrimoine connu
-  if (p.tags.historic) score += 20;
-  if (p.tags.amenity === "place_of_worship") score += 25;
-  if (p.tags.man_made === "watermill") score += 35;
-  if (p.tags.bridge) score += 15;
-
-  // indices "urbex-like"
-  if (p.tags.disused) score += 25;
-  if (p.tags.abandoned === "yes") score += 40;
-  if (p.tags.ruins === "yes") score += 30;
-
-  // bâtiments isolés (approx OSM)
-  if (p.tags.building && !p.tags.amenity) score += 10;
-
-  // bonus rivière (approx simple)
-  if (Math.random() > 0.85) score += 20;
-
-  return score;
+  return s;
 }
 
-// ----------------------------
-// SCAN OPENSTREETMAP
-// ----------------------------
-async function runScan() {
+// ---------------- CATEGORIE ----------------
+function cat(tags) {
+  if (tags.amenity === "place_of_worship") return "chapelle";
+  if (tags.man_made === "watermill") return "moulin";
+  if (tags.bridge) return "pont";
+  if (tags.ruins) return "ruine";
+  if (tags.building) return "ferme";
+  return "autre";
+}
 
-  document.getElementById("status").innerText = "Scan IA en cours...";
+// ---------------- SCAN ----------------
+async function scan() {
 
-  layers.forEach(l => map.removeLayer(l));
-  layers = [];
+  document.getElementById("status").innerText = "scan...";
+
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  dataAll = [];
 
   const query = `
   [out:json];
   (
     node(around:25000,43.626,0.876);
     way(around:25000,43.626,0.876);
-    relation(around:25000,43.626,0.876);
   );
   out center tags;
   `;
@@ -89,48 +119,70 @@ async function runScan() {
   const url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
 
   const res = await fetch(url);
-  const data = await res.json();
+  const json = await res.json();
 
-  let count = 0;
-
-  for (let el of data.elements) {
+  for (let el of json.elements) {
 
     if (!el.tags) continue;
 
     const lat = el.lat || (el.center && el.center.lat);
     const lon = el.lon || (el.center && el.center.lon);
-
     if (!lat || !lon) continue;
 
-    const score = computeScore(el);
+    let s = score(el.tags);
 
-    if (score < 20) continue; // filtre intelligent
+    if (s < 15) continue;
 
-    let color = "green";
-    if (score > 60) color = "red";
-    else if (score > 40) color = "orange";
-
-    const marker = L.circleMarker([lat, lon], {
-      radius: 6,
-      color: color
-    }).addTo(map);
-
-    const name = el.tags.name || "Lieu sans nom";
-
-    marker.bindPopup(`
-      <b>${name}</b><br>
-      ⭐ Score IA: ${score}<br><br>
-      <b>Analyse :</b><br>
-      ${JSON.stringify(el.tags, null, 2)}
-    `);
-
-    layers.push(marker);
-    count++;
+    dataAll.push({
+      lat, lon,
+      name: el.tags.name || "Sans nom",
+      score: s,
+      cat: cat(el.tags)
+    });
   }
 
-  document.getElementById("status").innerText =
-    `Terminé : ${count} lieux détectés`;
+  render();
 }
+
+// ---------------- AFFICHAGE + FILTRE ----------------
+function render() {
+
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+
+  let c = document.getElementById("cat").value;
+  let sort = document.getElementById("sort").value;
+
+  let list = dataAll.filter(x => c === "all" || x.cat === c);
+
+  list.sort((a,b) => sort === "desc" ? b.score - a.score : a.score - b.score);
+
+  list.forEach(p => {
+
+    let color = "green";
+    if (p.score > 40) color = "red";
+    else if (p.score > 25) color = "orange";
+
+    let m = L.circleMarker([p.lat, p.lon], {
+      radius: 6,
+      color
+    }).addTo(map);
+
+    m.bindPopup(`
+      <b>${p.name}</b><br>
+      Catégorie: ${p.cat}<br>
+      Score: ${p.score}
+    `);
+
+    markers.push(m);
+  });
+
+  document.getElementById("status").innerText =
+    list.length + " résultats";
+}
+
+document.getElementById("cat").onchange = render;
+document.getElementById("sort").onchange = render;
 
 </script>
 
