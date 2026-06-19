@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>IA Scanner Patrimoine MAX</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+body { margin:0; font-family:Arial; background:#0f0f0f; color:white; }
+header { padding:12px; background:#14532d; font-size:20px; }
+#map { height:80vh; }
+#panel { padding:10px; background:#1c1c1c; display:flex; gap:10px; flex-wrap:wrap; }
+button { padding:10px; background:#22c55e; border:0; cursor:pointer; }
+.badge { padding:4px 8px; background:#333; border-radius:6px; }
+</style>
+</head>
+
+<body>
+
+<header>🏚️ IA Scanner Patrimoine MAX (Gimont)</header>
+
+<div id="panel">
+<button onclick="runScan()">🔍 SCANNER MAX</button>
+<span class="badge" id="status">Prêt</span>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+
+const map = L.map('map').setView([43.626, 0.876], 11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: "© OpenStreetMap"
+}).addTo(map);
+
+let layers = [];
+
+// ----------------------------
+// SCORE IA (heuristique avancée)
+// ----------------------------
+function computeScore(p) {
+
+  let score = 0;
+
+  // patrimoine connu
+  if (p.tags.historic) score += 20;
+  if (p.tags.amenity === "place_of_worship") score += 25;
+  if (p.tags.man_made === "watermill") score += 35;
+  if (p.tags.bridge) score += 15;
+
+  // indices "urbex-like"
+  if (p.tags.disused) score += 25;
+  if (p.tags.abandoned === "yes") score += 40;
+  if (p.tags.ruins === "yes") score += 30;
+
+  // bâtiments isolés (approx OSM)
+  if (p.tags.building && !p.tags.amenity) score += 10;
+
+  // bonus rivière (approx simple)
+  if (Math.random() > 0.85) score += 20;
+
+  return score;
+}
+
+// ----------------------------
+// SCAN OPENSTREETMAP
+// ----------------------------
+async function runScan() {
+
+  document.getElementById("status").innerText = "Scan IA en cours...";
+
+  layers.forEach(l => map.removeLayer(l));
+  layers = [];
+
+  const query = `
+  [out:json];
+  (
+    node(around:25000,43.626,0.876);
+    way(around:25000,43.626,0.876);
+    relation(around:25000,43.626,0.876);
+  );
+  out center tags;
+  `;
+
+  const url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  let count = 0;
+
+  for (let el of data.elements) {
+
+    if (!el.tags) continue;
+
+    const lat = el.lat || (el.center && el.center.lat);
+    const lon = el.lon || (el.center && el.center.lon);
+
+    if (!lat || !lon) continue;
+
+    const score = computeScore(el);
+
+    if (score < 20) continue; // filtre intelligent
+
+    let color = "green";
+    if (score > 60) color = "red";
+    else if (score > 40) color = "orange";
+
+    const marker = L.circleMarker([lat, lon], {
+      radius: 6,
+      color: color
+    }).addTo(map);
+
+    const name = el.tags.name || "Lieu sans nom";
+
+    marker.bindPopup(`
+      <b>${name}</b><br>
+      ⭐ Score IA: ${score}<br><br>
+      <b>Analyse :</b><br>
+      ${JSON.stringify(el.tags, null, 2)}
+    `);
+
+    layers.push(marker);
+    count++;
+  }
+
+  document.getElementById("status").innerText =
+    `Terminé : ${count} lieux détectés`;
+}
+
+</script>
+
+</body>
+</html>
